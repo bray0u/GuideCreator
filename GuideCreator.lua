@@ -1,5 +1,15 @@
+local version = select(4, GetBuildInfo())
+
+local function CreateFrame_(arg1,arg2,arg3,arg4,...)
+    if version < 20500 and arg4 == "BackdropTemplate" then
+        arg4 = nil
+    end
+
+    return CreateFrame(arg1,arg2,arg3,arg4,...)
+end
+
 local eventFrame = CreateFrame("Frame")
-local f = CreateFrame("Frame", "GC_Editor", UIParent, "BackdropTemplate")
+local f = CreateFrame_("Frame", "GC_Editor", UIParent, "BackdropTemplate")
 
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("QUEST_DETAIL")
@@ -15,7 +25,8 @@ eventFrame:RegisterEvent("UI_INFO_MESSAGE")
 eventFrame:RegisterEvent("PLAYER_CONTROL_LOST")
 eventFrame:RegisterEvent("PLAYER_CONTROL_GAINED")
 eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-
+eventFrame:RegisterEvent("TAXIMAP_OPENED")
+    
 GC_Debug = false
 
 local UpdateWindow, ScrollDown
@@ -33,6 +44,9 @@ local previousQuest
 local onFly = false
 local taxiTime = 0
 local QuestLog
+local taxiNodeZone = {}
+local taxiNodeSubZone = {}
+local currentTaxiNode = 0
 
 local playerFaction = ""
 local _, race = UnitRace("player")
@@ -45,6 +59,7 @@ end
 
 hooksecurefunc("TakeTaxiNode", function(i)
     taxiTime = GetTime()
+    currentTaxiNode = i
 end)
 
 local function GetMapInfo()
@@ -140,7 +155,7 @@ local function updateGuide(step)
     end
     GC_GuideList[GC_Settings["CurrentGuide"]] = GC_GuideList[GC_Settings["CurrentGuide"]] .. step
 
-    local printableStep = step:gsub("\nstep\n", "")
+    local printableStep = step:gsub("\nstep", "")
     print("[|cff00ff00Step|cffffffff]" .. printableStep)
     UpdateWindow()
 end
@@ -250,14 +265,14 @@ function questObjectiveComplete(id, name, obj, text, type)
             end
         end
         lastUnique = isUnique
-	elseif GC_Settings["syntax"] == "RXP" then
+    elseif GC_Settings["syntax"] == "RXP" then
         if type == "monster" then
             monster, n = string.match(text, "(.*)%sslain%:%s%d+%/(%d+)")
 
             if not monster then
                 monster, n = string.match(text, "(.*)%:%s%d+/(%d+)")
             end
-			step = string.format(".complete %d,%d --%s (%s)", id, obj, monster,n)
+            step = string.format(".complete %d,%d --%s (%s)", id, obj, monster,n)
             n = tonumber(n)
         elseif type == "item" then
             item, n = string.match(text, "(.*)%:%s%d*/(%d*)")
@@ -464,14 +479,16 @@ local function UseHearthstone()
     local step = "\n"
     local mapName = GetMapInfo()
     local home = GetBindLocation()
-
+    local x, y = GetPlayerMapPosition("player")
+    x = x * 100
+    y = y * 100
+    
     if GC_Settings["syntax"] == "Guidelime" then
-        local x, y = GetPlayerMapPosition("player")
-        step = format("\nHearth to [H %s]", x, y, home)
+        step = format("\n[H][OC]Hearth to %s", home)
     elseif GC_Settings["syntax"] == "Zygor" then
-        step = string.format("\nstep\n    .hearth %s", home)
+        step = string.format("\nstep\n    Hearth to %s|goto %s,%.1f,.1f,2|noway|c", home,mapName,x,y)
     elseif GC_Settings["syntax"] == "RXP" then
-        step = string.format("\nstep\n    .hearth >>Use your Hearthstone to %s", home)
+        step = string.format("\nstep\n    #completewith next\n    .hs >>Hearth to %s", home)
     end
     updateGuide(step)
 end
@@ -487,14 +504,33 @@ local function FlightPath()
         local x, y = GetPlayerMapPosition("player")
         step = format("\n[G%.1f,%.1f%s]Get the [P %s] flight path", x, y, mapName, subzone)
     elseif GC_Settings["syntax"] == "Zygor" then
-        step = string.format("\nstep\n  Learn new fligh tpath|.goto %s,%.1f,%.1f", subzone, x, y)
+        step = string.format("\nstep\n    goto %s,%.1f,%.1f\n    fpath %s", mapName, x, y, subzone)
     elseif GC_Settings["syntax"] == "RXP" then
         step = string.format("\nstep\n    .goto %s,%.1f,%.1f\n    .fp >>Get the %s Flight Path", mapName, x, y, subzone)
     end
     updateGuide(step)
 end
 
-local function TakeFlightPath()
+local function ProcessTaxiMap()
+    taxiNodeZone = {}
+    taxiNodeSubZone = {}
+    for i = 1,NumTaxiNodes() do
+        local name = TaxiNodeName(i)
+        if name then
+            local subzone,zone = name:match("%s*([^,]+),?%s*(.*)")
+            if zone == "" then
+                zone = subzone
+            end
+            taxiNodeZone[i] = zone
+            taxiNodeSubZone[i] = subzone
+        end
+    end
+end
+
+local function TakeFlightPath(index)
+    local subzone = taxiNodeSubZone[index]
+    if not subzone then return end
+    local zone = taxiNodeZone[index]
     local mapName = GetMapInfo()
     local x, y = GetPlayerMapPosition("player")
     x = x * 100
@@ -502,37 +538,19 @@ local function TakeFlightPath()
 
     if GC_Settings["syntax"] == "Guidelime" then
         local x, y = GetPlayerMapPosition("player")
-        step = format("\n[G%.1f,%.1f%s]Talk to the flight Master", x, y)
+        step = format("\n[G%.1f,%.1f%s]Fly to [F %s]", x, y, mapName, subzone)
     elseif GC_Settings["syntax"] == "Zygor" then
-        step = string.format("\nstep\n  Talk to the flight master|.goto %.1f,%.1f", x, y)
+        step = string.format("\nstep\n  .goto %s,%.1f,%.1f|n\n    Fly to %s|goto %s|noway|c",mapName, x, y, subzone, zone)
     elseif GC_Settings["syntax"] == "RXP" then
-        step = string.format("\nstep\n    .goto %s,%.1f,%.1f >>Talk to the flight master", mapName, x, y)
+        step = string.format("\nstep\n    .goto %s,%.1f,%.1f\n    .fly %s >>Fly to %s", mapName, x, y, subzone, subzone)
     end
-    updateGuide(step)
-end
-
-local function LandFlightPath()
-    local mapName = GetMapInfo()
-    local subzone = GetMinimapZoneText()
-    local x, y = GetPlayerMapPosition("player")
-    x = x * 100
-    y = y * 100
-
-    if GC_Settings["syntax"] == "Guidelime" then
-        step = format("\nFly to [F %s]", subzone)
-    elseif GC_Settings["syntax"] == "Zygor" then
-        step = string.format("\nstep\n    .fpath %s|.goto %.1f,%.1f", subzone, x, y)
-    elseif GC_Settings["syntax"] == "RXP" then
-        step = string.format("\nstep\n    .fly %s,%.1f,%.1f >>Take the %s Flight Path", mapName, x, y, subzone)
-    end
-    
     updateGuide(step)
 end
 
 eventFrame:SetScript(
     "OnEvent",
     function(self, event, arg1, arg2, arg3, arg4)
-        
+    
         if GC_Debug and event ~= "UNIT_SPELLCAST_SUCCEEDED" then
             debugMsg(event)
             if arg1 then
@@ -563,20 +581,21 @@ eventFrame:SetScript(
 
         elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
             if  arg1 == "player" and arg3 == 8690 then
-                UseHearthstone()
+                C_Timer.After(1,function()
+                    UseHearthstone()
+                end)
             end
-
+        elseif event == "TAXIMAP_OPENED" then
+            ProcessTaxiMap()
+    
         elseif event == "PLAYER_CONTROL_LOST" then
             if GetTime() - taxiTime < 1 then
-                TakeFlightPath()
+                TakeFlightPath(currentTaxiNode)
                 onFly = true
             end
 
         elseif event == "PLAYER_CONTROL_GAINED" then
-            if onFly then
-                LandFlightPath()
-                onFly = false
-            end
+            onFly = false
 
         elseif event == "UI_INFO_MESSAGE" then
             if arg2 == ERR_NEWTAXIPATH then
@@ -787,7 +806,7 @@ local backdrop = {
     }
 }
 
-f.Text = CreateFrame("EditBox", nil, f, "BackdropTemplate")
+f.Text = CreateFrame_("EditBox", nil, f, "BackdropTemplate")
 f.Text:SetBackdrop(backdrop)
 f.Text:SetBackdropColor(0.1, 0.1, 0.1)
 f.Text:SetMultiLine(true)
